@@ -20,8 +20,8 @@ var ErrNameBlank = errors.New("please Add the department Name")
 
 // TableName is the physical table backing User. The source declares
 // @Table(name = "USER"), and Spring's physical naming strategy lower-cases it
-// to user. It is backtick-quoted because USER is a MySQL keyword.
-const TableName = "`user`"
+// to user. It is double-quoted because USER is a reserved word in PostgreSQL.
+const TableName = `"user"`
 
 // Column names, the lower-cased equivalents of the source @Column names
 // (Spring's physical naming strategy lower-cases identifiers).
@@ -34,31 +34,27 @@ const (
 	ColumnAbout    = "user_about"
 )
 
-// IDSequenceTable is the table Hibernate uses to allocate ids for
-// GenerationType.AUTO on MySQL, which has no native sequences.
-// It holds a single row with a next_val column.
+// IDSequenceTable is the sequence Hibernate uses to allocate ids for
+// GenerationType.AUTO.
 const IDSequenceTable = "hibernate_sequence"
 
+// NextIDQuery allocates the next User id from hibernate_sequence.
+const NextIDQuery = "SELECT nextval('" + IDSequenceTable + "')"
+
 // schemaStatements reproduces the DDL that Hibernate ddl-auto=update emits
-// for this entity with MySQL8Dialect (the dialect in application.properties).
+// for this entity, targeting PostgreSQL (the database the app runs on).
 //
 // Every statement is idempotent, so running them on each boot is safe.
 var schemaStatements = []string{
-	"CREATE TABLE IF NOT EXISTS " + TableName + " (" +
-		"user_id INTEGER NOT NULL, " +
-		"user_name VARCHAR(255), " +
-		"user_email VARCHAR(255), " +
-		"user_password VARCHAR(255), " +
-		"user_role VARCHAR(255), " +
-		"user_about VARCHAR(500), " +
-		"PRIMARY KEY (user_id), " +
-		"CONSTRAINT uk_user_user_email UNIQUE (user_email)" +
-		") ENGINE=InnoDB",
-	"CREATE TABLE IF NOT EXISTS " + IDSequenceTable + " (next_val BIGINT) ENGINE=InnoDB",
-	// Hibernate seeds the sequence table with 1. Only do so when it is empty,
-	// so that restarts never reset the counter.
-	"INSERT INTO " + IDSequenceTable + " (next_val) SELECT 1 FROM DUAL " +
-		"WHERE NOT EXISTS (SELECT 1 FROM " + IDSequenceTable + ")",
+	"CREATE SEQUENCE IF NOT EXISTS " + IDSequenceTable + " START WITH 1 INCREMENT BY 1",
+	"CREATE TABLE IF NOT EXISTS " + TableName + " (\n" +
+		"    user_id       INTEGER PRIMARY KEY,\n" +
+		"    user_name     VARCHAR(255),\n" +
+		"    user_email    VARCHAR(255) UNIQUE,\n" +
+		"    user_password VARCHAR(255),\n" +
+		"    user_role     VARCHAR(255),\n" +
+		"    user_about    VARCHAR(500)\n" +
+		")",
 }
 
 // Execer is the minimal database capability needed to create the schema.
@@ -111,20 +107,11 @@ func OpenDB(ctx context.Context, driverName, dsn string) (*sql.DB, error) {
 	return db, nil
 }
 
-// NextID allocates the next User id from hibernate_sequence, the way
-// Hibernate's table-backed AUTO generator does on MySQL.
-//
-// It must be called inside a transaction (pass the *sql.Tx), because
-// SELECT ... FOR UPDATE only serialises concurrent callers while a
-// transaction is open.
+// NextID allocates the next User id from hibernate_sequence.
 func NextID(ctx context.Context, q Querier) (int, error) {
 	var next int64
-	err := q.QueryRowContext(ctx, "SELECT next_val FROM "+IDSequenceTable+" FOR UPDATE").Scan(&next)
-	if err != nil {
+	if err := q.QueryRowContext(ctx, NextIDQuery).Scan(&next); err != nil {
 		return 0, fmt.Errorf("model: read next user id: %w", err)
-	}
-	if _, err := q.ExecContext(ctx, "UPDATE "+IDSequenceTable+" SET next_val = ? WHERE next_val = ?", next+1, next); err != nil {
-		return 0, fmt.Errorf("model: advance user id sequence: %w", err)
 	}
 	return int(next), nil
 }
