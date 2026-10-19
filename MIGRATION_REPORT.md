@@ -1,16 +1,16 @@
 ## Migration Report
 
-**Recommendation:** SIGNIFICANT REVIEW REQUIRED (based on target unit tests only; behavior was not compared)
+**Recommendation:** SIGNIFICANT REVIEW REQUIRED (based on behavioral comparison against the original application)
 **Build:** passed
-**Behavior vs original:** not verified — Could not start source server: source: [INFO] BUILD SUCCESS | [INFO] ------------------------------------------------------------------------ | [INFO] Total time: 6.888 s | [INFO] Finished at: 2026-1…
+**Behavior vs original:** 7/7 comparisons match
 **Target unit tests:** 59/59 passing
 **Source test baseline:** 0/1 passing
 **Ported test files collected by the runner:** 8/8
 **Modules migrated:** 8/8
-**Model self-assessed confidence:** 91%
+**Model self-assessed confidence:** 95%
 
 ### Summary
-8 of 8 modules translated, 1 with open critical issues. Build: passed. Target unit tests: 59/59 passing. Source test baseline: 0/1 passing. Behavior vs original: not verified (Could not start source server: source: [INFO] BUILD SUCCESS | [INFO] --------------------------------------------------…). 2 module(s) required human revision feedback (2 revision round(s) total). 3 modules are below confidence threshold and need review. Model self-assessed confidence: 91%.
+8 of 8 modules translated, 1 with open critical issues. Build: passed. Target unit tests: 59/59 passing. Source test baseline: 0/1 passing. Behavior vs original: 7/7 comparisons match. 2 module(s) required human revision feedback (2 revision round(s) total). 3 modules are below confidence threshold and need review. Model self-assessed confidence: 95%.
 
 ### Open critical issues
 - `src/main/java/com/smartContact/model/User.java`: OpenDB/EnsureSchema are never called. cmd/server/main.go opens no database and does not create the schema, so the USER table is never created at startup, which the migration notes explicitly require.
@@ -20,13 +20,14 @@
 - `internal/model/user.go` (+19/-32): target test failures
 - `internal/repository/user_repository.go` (+5/-8): compiler errors
 - `internal/repository/user_repository.go` (+3/-1): target test failures
+- `internal/httpapi/handler.go` (+25/-4): endpoint behaviour
 
 ### Agent notes (unverified)
-Migrated the smartContact Spring Boot user service (8 files) to Go with the standard library. It compiles and all 59 target tests pass. The server boots: /get_user_data and /get_user_name/name/{name} return 200, but /get_user_data/1 returns 404. That could be the migrated not-found handling on an empty database or a route that isn't mounted, and it hasn't been checked. Contract tests did not run because the source Spring server would not start in the sandbox. User.java (0.58, with open issues) and UserDao.java (0.79) are below the confidence threshold. Reviewers should also check that the database driver and SQL dialect match the source's JDBC settings: the observer said MySQL, but the target config says postgres.
+Contract tests re-run on request.
 
 
 ### Other review findings
-- [info] **inconsistent-pattern**: The fix loops moved the persistence layer from MySQL to PostgreSQL: `$n` placeholders, `nextval('hibernate_sequence')`, `RETURNING`, a double-quoted `"user"` table, and `cmd/server/router.go` opening the `postgres` driver through lib/pq. The documentation in internal/repository/user_repository.go was not updated to match. The package doc still says all SQL targets MySQL with '?' placeholders, a backtick-quoted table name and no RETURNING clauses. The constant block comment still says model.TableName is backtick-quoted, and the SQLUserRepository / NewSQLUserRepository docs still say 'targeting MySQL' and 'must be a MySQL connection'. The FindByName comment about MySQL *_ci collations is also wrong now: on PostgreSQL the `=` comparison is case-sensitive, unlike the MySQL source. internal/model/user.go's OpenDB doc also still suggests importing the MySQL driver. Anyone who follows these docs and wires a MySQL driver will see every query fail.
-- [info] **logic-bug**: The Save doc comment says existence is checked with SELECT ... FOR UPDATE rather than UPDATE's RowsAffected. The code after the fix loops does the opposite: it relies on UPDATE RowsAffected and falls through to INSERT when the count is 0. lockUser and lockByIDSQL, which were re-added to fix a compile error, are now dead code. On PostgreSQL RowsAffected counts matched rows, so the behaviour is correct today. But the comment misdescribes the logic, and on MySQL (which the comments still describe) an UPDATE that writes identical values would wrongly insert a duplicate row with a new id. Either remove lockUser or use it, and fix the comment.
+- [warning] **inconsistent-pattern**: The fix loops moved the SQL layer from MySQL to PostgreSQL: `$n` placeholders, `nextval('hibernate_sequence')`, `RETURNING`, a double-quoted `"user"` table, and `lib/pq` in cmd/server/router.go. The prose in the repository package was not updated to match. The package doc and the NewSQLUserRepository doc still say the SQL targets MySQL, uses '?' placeholders, a backtick-quoted table and no RETURNING clauses. FindByName's comment still describes MySQL `_ci` collation semantics, but on Postgres the comparison is case-sensitive, which is a behaviour difference from the MySQL source that is not documented. model.OpenDB still tells callers to import go-sql-driver/mysql, which would break every query here. Save's doc says existence is checked with SELECT ... FOR UPDATE, but the code actually relies on UPDATE's RowsAffected. lockUser and lockByIDSQL are now dead code that was re-added only to fix a compile error. The code works on Postgres, but the docs contradict it and would mislead anyone who wires in a MySQL driver.
+- [info] **logic-bug**: Save treats `RowsAffected == 0` from the UPDATE as "no such id" and then INSERTs a new row with a freshly allocated id. This is correct on PostgreSQL, which counts matched rows. Under MySQL's default changed-rows semantics, though, a PUT with values identical to the stored ones would silently create a duplicate user. The code's own comments say MySQL is the target, and the lockUser approach they describe was meant to prevent exactly this. Since the save/update path is tied to the driver choice, either delete the MySQL claims or bring back the lockUser existence check.
 ---
 *Generated by Migrator (agentic orchestrator)*
