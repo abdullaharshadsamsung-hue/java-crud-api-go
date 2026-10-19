@@ -140,9 +140,11 @@ func (r *SQLUserRepository) Save(ctx context.Context, u *model.User) (saved *mod
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, insertSQL, id, out.Name, out.Email, out.Password, out.Role, out.About); err != nil {
+	var insertedID int64
+	if err := tx.QueryRowContext(ctx, insertSQL, id, out.Name, out.Email, out.Password, out.Role, out.About).Scan(&insertedID); err != nil {
 		return nil, fmt.Errorf("repository: insert user: %w", err)
 	}
+	id = int(insertedID)
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("repository: insert user: commit: %w", err)
 	}
