@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"migrated-app/internal/model"
 )
@@ -63,14 +64,34 @@ func NewHandler(svc UserService, log *slog.Logger) (http.Handler, error) {
 		{"PUT /update_user_data/{id}", h.updateUser},
 		{"GET /get_user_name/name/{name}", h.getUserNameByName},
 	}
+	// probe matches known paths regardless of method, so the catch-all can
+	// answer 405 (as Spring does) for a known path with the wrong method.
+	probe := http.NewServeMux()
+	allowed := map[string][]string{}
+	noop := func(http.ResponseWriter, *http.Request) {}
 	for _, rt := range routes {
 		mux.HandleFunc(rt.pattern, rt.fn)
 		mux.HandleFunc(rt.pattern+"/{$}", rt.fn)
+
+		method, path, _ := strings.Cut(rt.pattern, " ")
+		for _, p := range []string{path, path + "/{$}"} {
+			if _, ok := allowed[p]; !ok {
+				probe.HandleFunc(p, noop)
+			}
+			allowed[p] = append(allowed[p], method)
+		}
 	}
-	// Unknown paths get Spring Boot's default 404 JSON body.
-	// MIGRATION_NOTE: because this catch-all matches every method, a known
-	// path with the wrong method answers 404 here, where Spring answered 405.
+	// Unknown paths get Spring Boot's default 404 JSON body; known paths with
+	// an unsupported method get 405 with an empty body (handled by the
+	// ResponseEntityExceptionHandler superclass of the source advice).
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if _, pattern := probe.Handler(r); pattern != "" {
+			if methods, ok := allowed[pattern]; ok {
+				w.Header().Set("Allow", strings.Join(methods, ", "))
+				WriteEmptyStatus(w, http.StatusMethodNotAllowed)
+				return
+			}
+		}
 		WriteSpringError(w, r, http.StatusNotFound)
 	})
 
