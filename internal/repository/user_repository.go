@@ -72,6 +72,9 @@ const (
 
 	// nextIDSQL allocates a new id from the Hibernate sequence.
 	nextIDSQL = model.NextIDQuery
+
+	// lockByIDSQL checks existence of a user row and locks it for the transaction.
+	lockByIDSQL = "SELECT " + model.ColumnID + " FROM " + userTable + " WHERE " + model.ColumnID + " = $1 FOR UPDATE"
 )
 
 // SQLUserRepository is the database/sql implementation of UserRepository
@@ -165,14 +168,8 @@ func lockUser(ctx context.Context, tx *sql.Tx, id int) (bool, error) {
 // tx. The FOR UPDATE lock serialises concurrent allocators until tx ends.
 func nextID(ctx context.Context, tx *sql.Tx) (int, error) {
 	var cur int64
-	if err := tx.QueryRowContext(ctx, selectNextValSQL).Scan(&cur); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, fmt.Errorf("repository: allocate user id: %s is not seeded", seqTable)
-		}
-		return 0, fmt.Errorf("repository: allocate user id: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, bumpNextValSQL, cur+1, cur); err != nil {
-		return 0, fmt.Errorf("repository: allocate user id: bump sequence: %w", err)
+	if err := tx.QueryRowContext(ctx, nextIDSQL).Scan(&cur); err != nil {
+		return 0, fmt.Errorf("repository: allocate user id from %s: %w", seqTable, err)
 	}
 	return int(cur), nil
 }
