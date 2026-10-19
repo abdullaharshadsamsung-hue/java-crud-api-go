@@ -57,26 +57,21 @@ const (
 
 const (
 	selectAllSQL  = "SELECT " + userColumns + " FROM " + userTable + " ORDER BY " + model.ColumnID
-	selectPageSQL = "SELECT " + userColumns + " FROM " + userTable + " ORDER BY " + model.ColumnID + " LIMIT ? OFFSET ?"
-	selectByIDSQL = "SELECT " + userColumns + " FROM " + userTable + " WHERE " + model.ColumnID + " = ?"
+	selectPageSQL = "SELECT " + userColumns + " FROM " + userTable + " ORDER BY " + model.ColumnID + " LIMIT $1 OFFSET $2"
+	selectByIDSQL = "SELECT " + userColumns + " FROM " + userTable + " WHERE " + model.ColumnID + " = $1"
 	// LIMIT 2 is enough to detect a non-unique result without reading the whole table.
-	selectByNameSQL = "SELECT " + userColumns + " FROM " + userTable + " WHERE " + model.ColumnName + " = ? LIMIT 2"
-	// lockByIDSQL checks existence and row-locks the user inside the save transaction.
-	lockByIDSQL = "SELECT " + model.ColumnID + " FROM " + userTable + " WHERE " + model.ColumnID + " = ? FOR UPDATE"
-	insertSQL   = "INSERT INTO " + userTable + " (" + userColumns + ") VALUES (?, ?, ?, ?, ?, ?)"
-	updateSQL   = "UPDATE " + userTable + " SET " +
-		model.ColumnName + " = ?, " +
-		model.ColumnEmail + " = ?, " +
-		model.ColumnPassword + " = ?, " +
-		model.ColumnRole + " = ?, " +
-		model.ColumnAbout + " = ? WHERE " + model.ColumnID + " = ?"
-	deleteSQL = "DELETE FROM " + userTable + " WHERE " + model.ColumnID + " = ?"
+	selectByNameSQL = "SELECT " + userColumns + " FROM " + userTable + " WHERE " + model.ColumnName + " = $1 LIMIT 2"
+	insertSQL       = "INSERT INTO " + userTable + " (" + userColumns + ") VALUES ($1, $2, $3, $4, $5, $6) RETURNING " + model.ColumnID
+	updateSQL       = "UPDATE " + userTable + " SET " +
+		model.ColumnName + " = $2, " +
+		model.ColumnEmail + " = $3, " +
+		model.ColumnPassword + " = $4, " +
+		model.ColumnRole + " = $5, " +
+		model.ColumnAbout + " = $6 WHERE " + model.ColumnID + " = $1"
+	deleteSQL = "DELETE FROM " + userTable + " WHERE " + model.ColumnID + " = $1"
 
-	// Hibernate-style table-backed sequence allocation, done the same way
-	// Hibernate's TableStructure does it on MySQL: read under a row lock,
-	// then bump. MySQL has no UPDATE ... RETURNING.
-	selectNextValSQL = "SELECT next_val FROM " + seqTable + " FOR UPDATE"
-	bumpNextValSQL   = "UPDATE " + seqTable + " SET next_val = ? WHERE next_val = ?"
+	// nextIDSQL allocates a new id from the Hibernate sequence.
+	nextIDSQL = model.NextIDQuery
 )
 
 // SQLUserRepository is the database/sql implementation of UserRepository
@@ -121,14 +116,15 @@ func (r *SQLUserRepository) Save(ctx context.Context, u *model.User) (saved *mod
 
 	out := *u
 	if out.ID != 0 {
-		exists, err := lockUser(ctx, tx, out.ID)
+		res, err := tx.ExecContext(ctx, updateSQL, out.ID, out.Name, out.Email, out.Password, out.Role, out.About)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("repository: update user %d: %w", out.ID, err)
 		}
-		if exists {
-			if _, err := tx.ExecContext(ctx, updateSQL, out.Name, out.Email, out.Password, out.Role, out.About, out.ID); err != nil {
-				return nil, fmt.Errorf("repository: update user %d: %w", out.ID, err)
-			}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("repository: update user %d: rows affected: %w", out.ID, err)
+		}
+		if n > 0 {
 			if err := tx.Commit(); err != nil {
 				return nil, fmt.Errorf("repository: update user %d: commit: %w", out.ID, err)
 			}
